@@ -45,25 +45,79 @@ configuration file is not specified, C<detacher> will use the following default
 configuration:
 
 	{
+	    "common": {
+	        "dir": "/tmp",
+	        "alg": "sha256",
+	        "key": ""
+	    },
 	    "milter": {
 	        "tmpdir": "/tmp",
 	        "size": 1048576,
-	        "msgfmt": "An attachment has been replaced. Please visit:\n\n%s\n"
+		"urlfmt": "http://{host}:{port}/{hash}",
+	        "msgfmt": "An attachment has been replaced. Please visit:\n\n{url}\n"
 	    },
 	    "server": {
 	        "name": $HOSTNAME,
-	        "port": 8080,
-	        "addr": "0.0.0.0"
-	    },
-	    "common": {
-	        "dir": "/tmp"
+	        "addr": "0.0.0.0",
+	        "port": 8080
 	    }
 	}
 
-Using this configuration, any attachment larger than 1,048,576 (1MB) will be
-detached from the message and stored in C</tmp>. It will be replaced with a
-plaintext MIME entity, containing a URL which can be used to download the file.
-C<$HOSTNAME> is determined using L<Sys::Hostname>.
+=head2 Common
+
+=over
+
+=item * C<dir> - where detached files are stored. The default value is C</tmp>,
+which is UNSAFE as many operating system will purge the contents of this
+directory during a power cycle.
+
+=item * C<alg> - the hash algorithm to use. The default value is C<sha256>
+which probably should not be changed unless you have good reason
+
+=item * C<key> - if access to the web server is not restricted, then there is
+a risk that an attacker might perform a "brute force" attack using known hash
+values to learn if a particular file is present. This risk can be mitigated by
+setting the C<key> parameter to a non-empty value. B<Important Note:> if this
+value is ever changed, you will need to rename every detached file!
+
+=back
+
+=head2 Milter
+
+=over
+
+=item * C<tmpdir> - C<detacher> uses the L<MIME::Parser> library which writes
+temporary files to disk. This parameter controls which directory is used. Any
+files written to this location are removed when C<detacher> is finished.
+
+=item * C<size> - any attachments larger than this size are detached. The
+default value is 2MB.
+
+=item * C<urlfmt> - this is a template used to construct a URL. The default
+value is C<http://{host}:{port}/{hash}> which will be populated using the
+values from the C<server> section; however, if you are using a reverse proxy
+in front of the C<detacher> server, then you will want to change this value.
+
+=item * C<msgfmt> - this is the template for the plaintext message that will
+replace the attachment in the filtered message. Any instance of the string
+C<{url}> will be replaced with the URL.
+
+=back
+
+=head2 Server
+
+=over
+
+=item * C<name> - the DNS name of the server. The default value is that
+returned by C<Sys::Hostname>.
+
+=item * C<addr> - the IP address to bind to on the server host. The
+default value is C<0.0.0.0> but may be changed to some other value if a
+reverse proxy is used.
+
+=item * C<port> - The TCP port to bind to. The default value is C<8080>.
+
+=back
 
 =head1 SERVER MODE
 
@@ -184,16 +238,19 @@ if ($opt->{'config'}) {
 	$conf = {
 		'common' => {
 			'dir' => '/tmp',	# location where detached files are stored
+			'alg' => 'sha256',	# hash algorithm
+			'key' => '',		# secret key to mix in when generating hashes
 		},
 		'milter' => {
 			'size'   => 1024 ** 2,	# any file larger than this (in bytes) will be detached
 			'tmpdir' => '/tmp',	# to where temporary files are written
+			'urlfmt' => 'http://{host}:{port}/{hash}',
 			'msgfmt' => "An attachment has been replaced. Please visit:\n\n%s\n",
 		},
 		'server' => {
-			'port' => 8080,		# TCP port
-			'name' => hostname(),	# HTTP Host name
-			'addr' => '0.0.0.0',	# Local address to bind to
+			'port'   => 8080,	# TCP port
+			'name'   => hostname(),	# HTTP Host name
+			'addr'   => '0.0.0.0',	# Local address to bind to
 		},
 	};
 }
@@ -223,74 +280,92 @@ sub run_as_server {
 	# listen for connections
 	#
 	while (my $connection = $server->accept) {
+
+		#
+		# catch errors by using eval { ... }
+		#
 		eval {
-			my $request = $connection->get_request;
-
-			#
-			# parse request
-			#
-			if ($request->method eq 'GET') {
-
-				#
-				# remove all non-hex characters from the path to get the hash
-				#
-				my $hash = lc($request->uri->path);
-				$hash =~ s/[^0-9a-f]//g;
-
-				#
-				# look for the file on disk
-				#
-				my $path = sprintf('%s/%s', $conf->{'common'}->{'dir'}, $hash);
-				if (!-e $path) {
-					$connection->send_error(404);
-
-				} else {
-					#
-					# meta file must exist
-					#
-					my $meta = sprintf('%s.js', $path);
-					if (!-e $meta) {
-						$connection->send_error(500);
-
-					} else {
-						my $info = decode_json(read_file($meta));
-						if (!$info) {
-							$connection->send_error(500);
-
-						} else {
-
-							#
-							# check If-Modified-Since
-							#
-							my $date = $request->header('If-Modified-Since');
-							if ($date && $info->{'date'} < str2time($date)) {
-								$connection->send_status_line(304);
-
-							} else {
-								#
-								# send the file to the client
-								#
-								$connection->send_status_line;
-								$connection->send_header('Content-Type',        $info->{'type'});
-								$connection->send_header('Content-Disposition',	sprintf('attachment;filename="%s"', $info->{'name'})),
-								$connection->send_header('Content-Length',      (stat($path))[7]);
-								$connection->send_header('Last-Modified',       time2str($info->{'date'}));
-								$connection->send_header('Connection',          'close');
-
-								$connection->send_file($path);
-							}
-						}
-					}
-				}
-
-			} else {
-				$connection->send_error(400);
-
-			}
+			handle_connection($connection);
+			$connection->close;
+			undef($connection);
 		};
-		$connection->close;
-		undef($connection);
 	}
+}
+
+sub handle_connection {
+	my $connection = shift;
+	my $request = $connection->get_request;
+
+	if ($request->method ne 'GET') {
+		$connection->send_error(405);
+		return;
+	}
+
+	#
+	# remove all non-hex characters from the path to get the hash
+	#
+	my $hash = lc($request->uri->path);
+	$hash =~ s/[^0-9a-f]//g;
+
+	#
+	# look for the file on disk
+	#
+	my $path = sprintf('%s/%s', $conf->{'common'}->{'dir'}, $hash);
+	if (!-e $path) {
+		$connection->send_error(404);
+		return;
+	}
+
+	#
+	# meta file must exist
+	#
+	my $meta = sprintf('%s.js', $path);
+	if (!-e $meta) {
+		$connection->send_error(500);
+		return;
+	}
+
+	#
+	# parse meta file
+	#
+	my $json = read_file($meta);
+	if (!$json) {
+		$connection->send_error(500);
+		return;
+	}
+
+	my $info = decode_json($json);
+	if (!$info) {
+		$connection->send_error(500);
+		return;
+	}
+
+	#
+	# avoid sending the entire file if the client already has it cached:
+	#
+	my $date = $request->header('If-Modified-Since');
+	my $etag = $request->header('If-None-Match');
+
+	if (
+		($date && (stat($path))[9] <= str2time($date)) ||
+		($etag && $etag eq $hash)
+	) {
+		$connection->send_status_line(304);
+		return;
+	}
+
+	#
+	# cache miss, so send the file to the client
+	#
+	$connection->send_status_line;
+	$connection->send_header('Content-Type',        $info->{'type'});
+	$connection->send_header('Content-Disposition',	sprintf('attachment;filename="%s"', $info->{'name'})),
+	$connection->send_header('Content-Length',      (stat($path))[7]);
+	$connection->send_header('Last-Modified',       time2str((stat($path))[9]));
+	$connection->send_header('ETag',		$hash);
+	$connection->send_header('Connection',          'close');
+
+	$connection->send_file($path);
 }
 
 #
@@ -356,7 +431,7 @@ sub detach {
 	my $file   = $entity->bodyhandle->path;
 	my $hash   = hash_file($file);
 	my $path   = sprintf('%s/%s', $conf->{'common'}->{'dir'}, $hash);
-	my $url    = sprintf('http://%s:%d/%s', $conf->{'server'}->{'name'}, $conf->{'server'}->{'port'}, $hash);
+	my $url    = get_url($hash);
 	my $meta   = sprintf('%s.js', $path);
 
 	#
@@ -374,7 +449,6 @@ sub detach {
 		$handle->print(encode_json({
 			'type' => $entity->head->mime_type,
 			'name' => $entity->head->recommended_filename,
-			'date' => time(),
 		}));
 		$handle->close;
 	}
@@ -384,12 +458,37 @@ sub detach {
 	#
 	$entity->build(
 		'Type'	=> 'text/plain',
-		'Data'	=> sprintf($conf->{'milter'}->{'msgfmt'}, $url),
+		'Data'	=> get_msg($url),
 	);
 }
 
+#
+# generate a URL
+#
+sub get_url {
+	my $url = $conf->{'milter'}->{'urlfmt'};
+	$url =~ s/\{host\}/$conf->{'server'}->{'host'}/g;
+	$url =~ s/\{port\}/$conf->{'server'}->{'port'}/g;
+	$url =~ s/\{hash\}/$_[0]/g;
+	return $url;
+}
+
+#
+# generate a plaintext message
+#
+sub get_msg {
+	my $url = shift;
+	my $msg = $conf->{'milter'}->{'msgfmt'};
+	$msg =~ s/\{msg\}/$msg/g;
+	return $msg;
+}
+
+#
+# hash a file
+#
 sub hash_file {
-	my $digest = Digest::SHA->new;
-	$digest->addfile(shift);
+	my $digest = Digest::SHA->new($conf->{'common'}->{'alg'});
+	$digest->add($conf->{'common'}->{'key'});
+	$digest->addfile(shift, 'b');
 	return lc($digest->hexdigest);
 }

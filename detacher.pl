@@ -229,7 +229,7 @@ my $conf;
 if ($opt->{'config'}) {
 	my $json;
 	fail("Cannot read JSON from '%s'", $opt->{'config'}) if (!($json = read_file($opt->{'config'})));
-	fail("Cannot parse JSON in '%s'",  $opt->{'config'}) if (!($conf = json_decode($json)));
+	fail("Cannot parse JSON in '%s'",  $opt->{'config'}) if (!($conf = decode_json($json)));
 
 } else {
 	#

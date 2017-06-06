@@ -364,7 +364,7 @@ sub handle_connection {
 	$connection->send_header('Last-Modified',       time2str((stat($path))[9]));
 	$connection->send_header('ETag',		$hash);
 	$connection->send_header('Connection',          'close');
-
+	$connection->send_crlf;
 	$connection->send_file($path);
 }
 

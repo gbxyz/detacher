@@ -321,7 +321,7 @@ sub handle_connection {
 	#
 	my $meta = sprintf('%s.js', $path);
 	if (!-e $meta) {
-		$connection->send_error(500);
+		$connection->send_error(500, "Metadata for $hash not found");
 		return;
 	}
 
@@ -330,13 +330,13 @@ sub handle_connection {
 	#
 	my $json = read_file($meta);
 	if (!$json) {
-		$connection->send_error(500);
+		$connection->send_error(500, "Metadata for $hash not readable");
 		return;
 	}
 
 	my $info = decode_json($json);
 	if (!$info) {
-		$connection->send_error(500);
+		$connection->send_error(500, "Metadata for $hash not parseable");
 		return;
 	}
 
@@ -451,6 +451,7 @@ sub detach {
 			'name' => $entity->head->recommended_filename,
 		}));
 		$handle->close;
+		chmod(0400, $meta);
 	}
 
 	#

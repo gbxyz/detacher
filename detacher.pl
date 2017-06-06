@@ -479,7 +479,7 @@ sub get_url {
 sub get_msg {
 	my $url = shift;
 	my $msg = $conf->{'milter'}->{'msgfmt'};
-	$msg =~ s/\{msg\}/$msg/g;
+	$msg =~ s/\{msg\}/$url/g;
 	return $msg;
 }
 

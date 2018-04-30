@@ -3,6 +3,7 @@
 # same terms as Perl itself.
 use Digest::SHA;
 use File::Copy;
+use File::Path qw(make_path);
 use File::Slurp;
 use Getopt::Long;
 use HTTP::Daemon;
@@ -91,7 +92,7 @@ temporary files to disk. This parameter controls which directory is used. Any
 files written to this location are removed when C<detacher> is finished.
 
 =item * C<size> - any attachments larger than this size are detached. The
-default value is 2MB.
+default value is 1MB.
 
 =item * C<urlfmt> - this is a template used to construct a URL. The default
 value is C<http://{host}:{port}/{hash}> which will be populated using the
@@ -376,8 +377,20 @@ sub handle_connection {
 sub run_as_milter {
 
 	#
-	# MIME::Parser dumps message parts to disk, so
-	# configure it to use a temporary directory
+	# check and secure the temporary directory
+	#
+	if (-e $conf->{'milter'}->{'tmpdir'}) {
+		# make sure tmpdir is readable only by this user
+		chmod(0600, $conf->{'milter'}->{'tmpdir'});
+
+	} else {
+		# create temporary directory
+		make_path($conf->{'milter'}->{'tmpdir'}, { 'mode' => 0600 });
+
+	}
+
+	#
+	# instantiate MIME parser
 	#
 	my $parser = MIME::Parser->new;
 	$parser->output_under($conf->{'milter'}->{'tmpdir'});
@@ -413,7 +426,9 @@ sub run_as_milter {
 sub check_entity {
 	my $entity = shift;
 	if ($entity->is_multipart) {
-		map { check_entity($_) } $entity->parts;
+		foreach my $part ($entity->parts) {
+			check_entity($part);
+		}
 
 	} elsif ((stat($entity->bodyhandle->path))[7] > $conf->{'milter'}->{'size'}) {
 		detach($entity);

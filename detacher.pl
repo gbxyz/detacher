@@ -381,11 +381,11 @@ sub run_as_milter {
 	#
 	if (-e $conf->{'milter'}->{'tmpdir'}) {
 		# make sure tmpdir is readable only by this user
-		chmod(0600, $conf->{'milter'}->{'tmpdir'});
+		chmod(0700, $conf->{'milter'}->{'tmpdir'});
 
 	} else {
 		# create temporary directory
-		make_path($conf->{'milter'}->{'tmpdir'}, { 'mode' => 0600 });
+		make_path($conf->{'milter'}->{'tmpdir'}, { 'mode' => 0700 });
 
 	}
 
